@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>地籍变更系统</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; color: #1f2933; background: #f5f7fa; }
+  header { background: #1f4e79; color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .ver { font-size: 13px; opacity: .85; }
+  .wrap { display: grid; grid-template-columns: 380px 1fr; gap: 16px; padding: 16px; height: calc(100vh - 52px); }
+  .panel { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; padding: 14px; overflow: auto; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tabs button { flex: 1; padding: 7px 0; border: 1px solid #1f4e79; background: #fff; color: #1f4e79; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .tabs button.active { background: #1f4e79; color: #fff; }
+  h2 { font-size: 15px; margin: 14px 0 8px; }
+  label { font-size: 12px; color: #52606d; display: block; margin-bottom: 4px; }
+  textarea, input[type=text], input[type=number] { width: 100%; border: 1px solid #b6c2cf; border-radius: 6px; padding: 7px; font-size: 13px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  textarea { min-height: 150px; resize: vertical; }
+  button.action { margin-top: 8px; width: 100%; padding: 9px; border: 0; border-radius: 6px; background: #2f7ab8; color: #fff; font-size: 14px; cursor: pointer; }
+  button.action:disabled { background: #9bb3c8; cursor: not-allowed; }
+  button.danger { background: #c0392b; }
+  button.ok { background: #2e7d32; }
+  .msg { margin-top: 8px; padding: 8px 10px; border-radius: 6px; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+  .msg.err { background: #fdecea; color: #a3261c; border: 1px solid #f3b9b2; }
+  .msg.ok { background: #eaf6ec; color: #1e6b29; border: 1px solid #aed8b5; }
+  .msg.warn { background: #fff7e6; color: #8a5a00; border: 1px solid #f0d299; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { border: 1px solid #d9e0e8; padding: 4px 6px; text-align: left; }
+  th { background: #eef2f6; }
+  #map { width: 100%; height: 100%; background: #fbfcfd; border: 1px solid #d9e0e8; border-radius: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; margin-top: 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .swatch { width: 14px; height: 14px; border: 1px solid #334; border-radius: 3px; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; }
+  .pill.gap { background: #fdecea; color: #a3261c; }
+  .pill.enc { background: #fff1e0; color: #b15a00; }
+  .pill.exc { background: #f1e8fb; color: #5b2a86; }
+  .pill.ovl { background: #fde8f3; color: #9b1c5c; }
+  .hidden { display: none; }
+  .muted { color: #7b8794; font-size: 12px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .txn-link { color: #1f4e79; cursor: pointer; text-decoration: underline; }
+</style>
+</head>
+<body>
+<header>
+  <h1>地籍变更系统（分割 / 合并 / 竞争提交）</h1>
+  <span class="ver" id="versionLabel">当前版本：-</span>
+</header>
+<div class="wrap">
+  <div class="panel">
+    <div class="tabs">
+      <button id="tabImport" class="active" onclick="showTab('import')">导入</button>
+      <button id="tabChange" onclick="showTab('change')">变更</button>
+      <button id="tabQuery" onclick="showTab('query')">查询</button>
+    </div>
+
+    <!-- 导入 -->
+    <section id="paneImport">
+      <h2>初始导入 GeoJSON 宗地</h2>
+      <p class="muted">FeatureCollection，properties.parcel_id 为宗地号；Polygon 须为整数坐标、无洞、彼此不重叠（共边允许）。</p>
+      <textarea id="importText" placeholder='{"type":"FeatureCollection","features":[...]}'></textarea>
+      <button class="action" onclick="doImport()">导入并建立现势库</button>
+      <div id="importMsg"></div>
+    </section>
+
+    <!-- 变更 -->
+    <section id="paneChange" class="hidden">
+      <h2>提交分割 / 合并变更</h2>
+      <label>退出的宗地号（逗号分隔）</label>
+      <input type="text" id="retiredIds" placeholder="例如：P1,P2">
+      <label style="margin-top:8px">接替的新宗地（FeatureCollection）</label>
+      <textarea id="newParcelsText" style="min-height:120px" placeholder='{"type":"FeatureCollection","features":[...]}'></textarea>
+      <label style="margin-top:8px">变更原因（可选）</label>
+      <input type="text" id="reasonText">
+      <p class="muted" id="baseVerHint"></p>
+      <button class="action" onclick="doPlan()">预核验并预览缺口 / 侵占</button>
+      <div id="planMsg"></div>
+      <div id="planSummary"></div>
+      <button class="action ok hidden" id="commitBtn" onclick="doCommit()">确认提交（原子写入）</button>
+    </section>
+
+    <!-- 查询 -->
+    <section id="paneQuery" class="hidden">
+      <h2>宗地历史边界</h2>
+      <div class="row">
+        <input type="text" id="histParcelId" placeholder="宗地号，如 P1">
+        <button class="action" style="width:110px" onclick="queryParcelHistory()">查询</button>
+      </div>
+      <div id="histMsg"></div>
+
+      <h2>历史版本快照</h2>
+      <div class="row">
+        <input type="number" id="snapVersion" min="1" placeholder="版本号">
+        <button class="action" style="width:110px" onclick="querySnapshot()">查询</button>
+      </div>
+      <div id="snapMsg"></div>
+
+      <h2>变更记录</h2>
+      <button class="action" onclick="loadTxns()">刷新变更记录</button>
+      <div id="txnList"></div>
+      <div id="txnDetail"></div>
+    </section>
+  </div>
+
+  <div class="panel" style="padding:10px">
+    <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div class="legend">
+      <span><i class="swatch" style="background:#bcd9f5"></i>现势宗地</span>
+      <span><i class="swatch" style="background:#f5c6c0"></i>退出旧面</span>
+      <span><i class="swatch" style="background:#c8e6c9"></i>新面</span>
+      <span><i class="swatch" style="background:#e53935"></i>缺口</span>
+      <span><i class="swatch" style="background:#fb8c00"></i>侵占</span>
+      <span><i class="swatch" style="background:#8e24aa"></i>越界</span>
+      <span><i class="swatch" style="background:#d81b60"></i>新面互叠</span>
+    </div>
+  </div>
+</div>
+
+<script>
+const SVG_NS = "http://www.w3.org/2000/svg";
+let state = { version: 0, parcels: [] };
+let lastPlan = null;
+
+function showTab(name) {
+  for (const t of ["Import", "Change", "Query"]) {
+    document.getElementById("pane" + t).classList.toggle("hidden", t.toLowerCase() !== name);
+    document.getElementById("tab" + t).classList.toggle("active", t.toLowerCase() === name);
+  }
+}
+
+function setMsg(id, cls, text) {
+  const el = document.getElementById(id);
+  el.className = "msg " + (cls || "");
+  el.textContent = text || "";
+}
+
+async function api(path, opts) {
+  const resp = await fetch(path, opts);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error((data.error || "请求失败") + "：" + (data.detail || resp.status));
+  return data;
+}
+
+async function refreshState() {
+  const data = await api("/api/state");
+  state = data;
+  document.getElementById("versionLabel").textContent = "当前版本：v" + data.current_version + "　宗地数：" + data.parcel_count;
+  document.getElementById("baseVerHint").textContent = "提交基准版本 base_version = " + data.current_version + "（自动携带）";
+  renderMap();
+}
+
+/* ---------- SVG 渲染 ---------- */
+function allRings(features) {
+  const rings = [];
+  for (const f of features) {
+    const g = f.geometry || f;
+    if (g.type !== "Polygon") continue;
+    rings.push(g.coordinates[0]);
+  }
+  return rings;
+}
+
+function renderMap(overlays) {
+  const svg = document.getElementById("map");
+  svg.innerHTML = "";
+  const feats = state.parcels.map(p => ({ parcel_id: p.parcel_id, geometry: p.geometry }));
+  const ovFeats = [];
+  (overlays || []).forEach(o => (o.features || []).forEach(f => ovFeats.push(f)));
+  const rings = allRings(feats).concat(allRings(ovFeats));
+  if (!rings.length) {
+    const t = document.createElementNS(SVG_NS, "text");
+    t.setAttribute("x", 20); t.setAttribute("y", 30); t.setAttribute("fill", "#7b8794");
+    t.textContent = "暂无数据，请先导入 GeoJSON 宗地";
+    svg.appendChild(t);
+    return;
+  }
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  rings.forEach(ring => ring.forEach(([x, y]) => {
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  }));
+  const w = svg.clientWidth || 800, h = svg.clientHeight || 600;
+  const pad = 40;
+  const scale = Math.min((w - pad * 2) / Math.max(maxX - minX, 1), (h - pad * 2) / Math.max(maxY - minY, 1));
+  const ox = pad - minX * scale, oy = pad - minY * scale;
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  const tx = ([x, y]) => [ox + x * scale, h - (oy + y * scale)];
+
+  function poly(geom) {
+    if (geom.type !== "Polygon") return null;
+    return geom.coordinates[0].map(p => tx(p).join(",")).join(" ");
+  }
+  function addPolygon(geom, attrs) {
+    const pts = poly(geom);
+    if (!pts) return;
+    const el = document.createElementNS(SVG_NS, "polygon");
+    el.setAttribute("points", pts);
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+    svg.appendChild(el);
+    return el;
+  }
+  function addLabel(geom, text, color) {
+    const ring = geom.coordinates[0];
+    const cx = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+    const cy = ring.reduce((s, p) => s + p[1], 0) / ring.length;
+    const [lx, ly] = tx([cx, cy]);
+    const t = document.createElementNS(SVG_NS, "text");
+    t.setAttribute("x", lx); t.setAttribute("y", ly);
+    t.setAttribute("text-anchor", "middle"); t.setAttribute("font-size", 12);
+    t.setAttribute("fill", color || "#1f4e79"); t.setAttribute("pointer-events", "none");
+    t.textContent = text;
+    svg.appendChild(t);
+  }
+
+  feats.forEach(f => {
+    addPolygon(f.geometry, { fill: "#bcd9f5", stroke: "#1f4e79", "stroke-width": 1.5, "fill-opacity": 0.75 });
+    addLabel(f.geometry, f.parcel_id);
+  });
+  for (const layer of (overlays || [])) {
+    for (const f of layer.features) {
+      addPolygon(f.geometry, { fill: layer.color, stroke: layer.stroke || layer.color, "stroke-width": 1.2, "fill-opacity": layer.opacity ?? 0.55 });
+      if (f.label) addLabel(f.geometry, f.label, layer.stroke || layer.color);
+    }
+  }
+}
+
+/* ---------- 导入 ---------- */
+async function doImport() {
+  setMsg("importMsg", "");
+  let payload;
+  try { payload = JSON.parse(document.getElementById("importText").value); }
+  catch (e) { return setMsg("importMsg", "err", "GeoJSON 解析失败：" + e.message); }
+  try {
+    const r = await api("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    setMsg("importMsg", "ok", `导入成功：${r.imported} 宗，版本 v${r.new_version}，流水号 #${r.txn_id}`);
+    await refreshState();
+  } catch (e) { setMsg("importMsg", "err", e.message); }
+}
+
+/* ---------- 变更 ---------- */
+function readChangeRequest() {
+  const retiredIds = document.getElementById("retiredIds").value.split(",").map(s => s.trim()).filter(Boolean);
+  let fc;
+  try { fc = JSON.parse(document.getElementById("newParcelsText").value); }
+  catch (e) { throw new Error("新宗地 GeoJSON 解析失败：" + e.message); }
+  if (!fc || fc.type !== "FeatureCollection" || !Array.isArray(fc.features))
+    throw new Error("新宗地必须是 FeatureCollection");
+  const newParcels = fc.features.map(f => ({ parcel_id: String(f.properties.parcel_id), geometry: f.geometry }));
+  return {
+    base_version: state.current_version,
+    retired_ids: retiredIds,
+    new_parcels: newParcels,
+    reason: document.getElementById("reasonText").value,
+  };
+}
+
+function issueFeatures(items, color, stroke, labelKey) {
+  return { color, stroke, opacity: 0.6, features: items.map(it => ({ geometry: it.geometry, label: it[labelKey] || "" })) };
+}
+
+async function doPlan() {
+  setMsg("planMsg", "");
+  document.getElementById("planSummary").innerHTML = "";
+  document.getElementById("commitBtn").classList.add("hidden");
+  lastPlan = null;
+  let req;
+  try { req = readChangeRequest(); } catch (e) { return setMsg("planMsg", "err", e.message); }
+  try {
+    const report = await api("/api/changes/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
+    lastPlan = { req, report };
+    const overlays = [];
+    // 退出旧面
+    const oldFeats = state.parcels.filter(p => req.retired_ids.includes(p.parcel_id))
+      .map(p => ({ geometry: p.geometry, label: p.parcel_id }));
+    overlays.push({ color: "#f5c6c0", stroke: "#c0392b", opacity: 0.35, features: oldFeats });
+    // 新面
+    overlays.push({ color: "#c8e6c9", stroke: "#2e7d32", opacity: 0.45, features: req.new_parcels.map(p => ({ geometry: p.geometry, label: p.parcel_id })) });
+    if (report.gaps.length) overlays.push(issueFeatures(report.gaps, "#e53935", "#b71c1c", "kind"));
+    if (report.encroachments.length) overlays.push(issueFeatures(report.encroachments, "#fb8c00", "#e65100", "kind"));
+    if (report.excess.length) overlays.push(issueFeatures(report.excess, "#8e24aa", "#6a1b9a", "kind"));
+    if (report.internal_overlaps.length) overlays.push(issueFeatures(report.internal_overlaps, "#d81b60", "#880e4f", "kind"));
+    renderMap(overlays);
+
+    const pills = [];
+    const cnt = (arr, cls, name) => arr.length ? `<span class="pill ${cls}">${name} ${arr.length} 处</span>` : "";
+    pills.push(cnt(report.gaps, "gap", "缺口"));
+    pills.push(cnt(report.encroachments, "enc", "侵占"));
+    pills.push(cnt(report.excess, "exc", "越界"));
+    pills.push(cnt(report.internal_overlaps, "ovl", "互叠"));
+    document.getElementById("planSummary").innerHTML =
+      `<div style="margin:8px 0">${pills.join(" ") || '<span class="pill" style="background:#eaf6ec;color:#1e6b29">全部核验通过</span>'}</div>` +
+      `<table><tr><th>退出旧面总面积</th><td>${report.retired_union_area}</td></tr>` +
+      `<tr><th>新面总面积</th><td>${report.new_union_area}</td></tr></table>` +
+      (report.errors.length ? `<div class="msg err" style="margin-top:8px">${report.errors.join("\n")}</div>` : "");
+    if (report.valid) {
+      setMsg("planMsg", "ok", "预核验通过：新面恰好覆盖退出旧面，无缺口、侵占与重叠。可确认提交。");
+      document.getElementById("commitBtn").classList.remove("hidden");
+    } else {
+      setMsg("planMsg", "warn", "预核验未通过，图中红色/橙色/紫色区域为问题位置；修改后重新核验。");
+    }
+  } catch (e) { setMsg("planMsg", "err", e.message); renderMap(); }
+}
+
+async function doCommit() {
+  if (!lastPlan) return;
+  try {
+    const r = await api("/api/changes/commit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lastPlan.req) });
+    setMsg("planMsg", "ok", `提交成功：v${r.base_version} → v${r.new_version}，流水号 #${r.txn_id}\n退出：${r.retired_ids.join(", ")}\n新设：${r.new_ids.join(", ")}`);
+    document.getElementById("commitBtn").classList.add("hidden");
+    lastPlan = null;
+    await refreshState();
+  } catch (e) {
+    setMsg("planMsg", "err", e.message + "\n（现势与历史数据保持原状）");
+    await refreshState();
+  }
+}
+
+/* ---------- 查询 ---------- */
+async function queryParcelHistory() {
+  const pid = document.getElementById("histParcelId").value.trim();
+  if (!pid) return setMsg("histMsg", "warn", "请输入宗地号");
+  try {
+    const r = await api("/api/history/parcel/" + encodeURIComponent(pid));
+    const rows = r.versions.map(v =>
+      `<tr><td>v${v.version}</td><td>${v.status}</td><td>${v.area}</td><td>#${v.created_txn_id ?? "-"}</td><td>#${v.retired_txn_id ?? "-"}</td></tr>`).join("");
+    setMsg("histMsg", "");
+    document.getElementById("histMsg").outerHTML =
+      `<div id="histMsg" class="msg" style="background:#f5f7fa;color:#1f2933;max-height:220px;overflow:auto"><table>
+       <tr><th>版本</th><th>状态</th><th>面积</th><th>创建流水</th><th>退出流水</th></tr>${rows}</table></div>`;
+    renderMap([{ color: "#bcd9f5", stroke: "#1f4e79", features: r.versions.map(v => ({ geometry: v.geometry, label: "v" + v.version })) }]);
+  } catch (e) { setMsg("histMsg", "err", e.message); }
+}
+
+async function querySnapshot() {
+  const v = parseInt(document.getElementById("snapVersion").value, 10);
+  if (!v) return setMsg("snapMsg", "warn", "请输入版本号");
+  try {
+    const r = await api("/api/history/version/" + v);
+    setMsg("snapMsg", "ok", `v${v} 现势快照：${r.parcels.length} 宗`);
+    renderMap([{ color: "#d7e9fb", stroke: "#1f4e79", features: r.parcels.map(p => ({ geometry: p.geometry, label: p.parcel_id })) }]);
+  } catch (e) { setMsg("snapMsg", "err", e.message); }
+}
+
+async function loadTxns() {
+  try {
+    const r = await api("/api/txns");
+    document.getElementById("txnList").innerHTML = "<table><tr><th>#</th><th>类型</th><th>版本变化</th><th>原因</th><th>时间</th><th></th></tr>" +
+      r.txns.map(t => `<tr><td>${t.txn_id}</td><td>${t.kind}</td><td>v${t.base_version}→v${t.new_version}</td><td>${t.reason || ""}</td><td>${t.created_at}</td><td><span class="txn-link" onclick="loadTxn(${t.txn_id})">详情</span></td></tr>`).join("") + "</table>";
+  } catch (e) { document.getElementById("txnList").innerHTML = `<div class="msg err">${e.message}</div>`; }
+}
+
+async function loadTxn(id) {
+  try {
+    const r = await api("/api/txns/" + id);
+    const itemRows = r.items.map(i => `<tr><td>${i.role === "retired" ? "退出" : "新设"}</td><td>${i.parcel_id}</td><td>${i.area}</td></tr>`).join("");
+    document.getElementById("txnDetail").innerHTML =
+      `<div class="msg" style="background:#f5f7fa;color:#1f2933;max-height:260px;overflow:auto">
+       <b>流水 #${r.txn_id}（${r.kind}）</b> v${r.base_version}→v${r.new_version}<br>
+       时间：${r.created_at}${r.reason ? "<br>原因：" + r.reason : ""}
+       <table style="margin-top:6px"><tr><th>角色</th><th>宗地号</th><th>面积</th></tr>${itemRows}</table></div>`;
+    renderMap([{ color: "#f5c6c0", stroke: "#c0392b", features: r.items.filter(i => i.role === "retired").map(i => ({ geometry: i.geometry, label: i.parcel_id })) },
+              { color: "#c8e6c9", stroke: "#2e7d32", features: r.items.filter(i => i.role === "new").map(i => ({ geometry: i.geometry, label: i.parcel_id })) }]);
+  } catch (e) { document.getElementById("txnDetail").innerHTML = `<div class="msg err">${e.message}</div>`; }
+}
+
+refreshState().catch(() => {});
+</script>
+</body>
+</html>

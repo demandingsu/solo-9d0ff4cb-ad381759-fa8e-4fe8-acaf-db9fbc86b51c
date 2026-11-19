@@ -1,0 +1,14 @@
+{
+  "_comment": "合并示例（在分割生效后使用）：退出 P1A 与 P1B，由 P1C 接替，恢复原 P1 范围。retired_ids=[\"P1A\",\"P1B\"]",
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"parcel_id": "P1C"},
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]]
+      }
+    }
+  ]
+}

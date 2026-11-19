@@ -1,0 +1,22 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"parcel_id": "P1"},
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {"parcel_id": "P2"},
+      "type_note": "相邻宗地，与 P1 共边 x=10",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[10, 0], [20, 0], [20, 10], [10, 10], [10, 0]]]
+      }
+    }
+  ]
+}

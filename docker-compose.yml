@@ -1,0 +1,11 @@
+services:
+  cadastre:
+    build: .
+    container_name: cadastre-web
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      CADASTRE_DB: /data/cadastre.db
+    restart: unless-stopped
