@@ -1,0 +1,11 @@
+{
+  "_comment": "图幅配准示例请求：配合 initial.geojson（v1）使用。控制点按周边顺序 G1..G4；登记顶点取自 P1 的四个环顶点 (0,0)/(10,0)/(10,10)/(0,10)。",
+  "base_version": 1,
+  "gcps": [
+    {"pixel": [20, 20],   "ground": [0, 0]},
+    {"pixel": [220, 20],  "ground": [10, 0]},
+    {"pixel": [220, 220], "ground": [10, 10]},
+    {"pixel": [20, 220],  "ground": [0, 10]}
+  ],
+  "polylines_file": "samples/registration_polylines.geojson"
+}

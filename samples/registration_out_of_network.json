@@ -1,0 +1,20 @@
+{
+  "_comment": "失败示例：折线终点 (300,120) 超出控制网（像素 x∈[20,220]），重算将返回 out_of_network 问题定位并保留上次成功成果。",
+  "base_version": 1,
+  "gcps": [
+    {"pixel": [20, 20],   "ground": [0, 0]},
+    {"pixel": [220, 20],  "ground": [10, 0]},
+    {"pixel": [220, 220], "ground": [10, 10]},
+    {"pixel": [20, 220],  "ground": [0, 10]}
+  ],
+  "polylines": {
+    "type": "FeatureCollection",
+    "features": [
+      {
+        "type": "Feature",
+        "properties": {"id": "out-of-network"},
+        "geometry": {"type": "LineString", "coordinates": [[120, 120], [300, 120]]}
+      }
+    ]
+  }
+}

@@ -6,14 +6,19 @@ import threading
 
 import pytest
 
-_db_fd, _db_path = tempfile.mkstemp(suffix=".db")
+_db_fd, _db_path = tempfile.mkstemp(suffix=".db", prefix="cadastre_api_")
 os.close(_db_fd)
+os.remove(_db_path)  # 确保从空库开始
 os.environ["CADASTRE_DB"] = _db_path
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app import main as app_main  # noqa: E402
 from app.main import app  # noqa: E402
 from app import db  # noqa: E402
+
+# 同一进程内多个测试模块各自使用独立数据库
+app_main.DB_PATH = _db_path
 
 
 @pytest.fixture(scope="module", autouse=True)

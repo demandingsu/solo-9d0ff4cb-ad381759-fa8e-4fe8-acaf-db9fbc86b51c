@@ -1,16 +1,17 @@
-"""地籍变更 Web 应用：导入、预核验、确认提交、现势/历史/变更记录查询。"""
+"""地籍变更 Web 应用：导入、预核验、确认提交、现势/历史/变更记录查询、图幅配准。"""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import db
+from . import db, reg_db
 from .geometry import GeoValidationError, PlanValidationError
 
 DB_PATH = os.environ.get("CADASTRE_DB", "/data/cadastre.db")
@@ -21,6 +22,7 @@ def get_conn() -> db.sqlite3.Connection:
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = db.connect(DB_PATH)
     db.init_db(conn)
+    reg_db.init_reg_db(conn)
     return conn
 
 
@@ -37,6 +39,14 @@ app = FastAPI(title="地籍变更系统", version="1.0", lifespan=lifespan)
 @app.exception_handler(GeoValidationError)
 def _geo_error_handler(_: Request, exc: GeoValidationError) -> JSONResponse:
     return JSONResponse(status_code=422, content={"error": "数据校验失败", "detail": str(exc)})
+
+
+@app.exception_handler(json.JSONDecodeError)
+def _json_decode_handler(_: Request, exc: json.JSONDecodeError) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={"error": "数据校验失败", "detail": f"请求体不是合法 JSON：{exc.msg}（第 {exc.lineno} 行）"},
+    )
 
 
 @app.exception_handler(PlanValidationError)
@@ -132,6 +142,72 @@ def txn_detail(txn_id: int) -> dict:
         return db.get_txn(conn, txn_id)
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------- 图幅配准
+@app.post("/api/registration/jobs")
+async def create_registration_job(request: Request) -> dict:
+    req = await request.json()
+    conn = get_conn()
+    try:
+        return reg_db.create_job(conn, req)
+    finally:
+        conn.close()
+
+
+@app.get("/api/registration/jobs")
+def list_registration_jobs() -> dict:
+    conn = get_conn()
+    try:
+        return {"jobs": reg_db.list_jobs(conn)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/registration/jobs/{job_id}")
+def get_registration_job(job_id: int) -> dict:
+    conn = get_conn()
+    try:
+        return reg_db.get_job(conn, job_id)
+    finally:
+        conn.close()
+
+
+@app.post("/api/registration/jobs/{job_id}/recompute")
+async def recompute_registration_job(job_id: int, request: Request) -> dict:
+    body = await request.json()
+    conn = get_conn()
+    try:
+        # 空对象 {} 表示仅用已更正/已保存的控制点重算；否则整体替换输入
+        return reg_db.recompute_job(conn, job_id, body or None)
+    finally:
+        conn.close()
+
+
+@app.get("/api/registration/jobs/{job_id}/result.geojson")
+def download_registration_result(job_id: int) -> Response:
+    """下载最近一次成功成果；重算失败时仍返回上一次成功成果。"""
+    conn = get_conn()
+    try:
+        job = reg_db.get_job(conn, job_id)
+    finally:
+        conn.close()
+    if not job["result"]:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "尚无成功成果",
+                "detail": "该配准作业从未计算成功，请先修正问题（退化/重叠/超出控制网）后重算",
+                "issues": job["issues"],
+            },
+        )
+    return Response(
+        content=json.dumps(job["result"], ensure_ascii=False),
+        media_type="application/geo+json",
+        headers={
+            "Content-Disposition": f'attachment; filename="registration_{job_id}_result.geojson"'
+        },
+    )
 
 
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

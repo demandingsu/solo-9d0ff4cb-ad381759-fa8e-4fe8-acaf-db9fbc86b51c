@@ -1,0 +1,22 @@
+{
+  "_comment": "图幅配准示例输入：像素折线 FeatureCollection（LineString / MultiLineString）。像素坐标系原点在左上角，配准计算只做坐标仿射，不涉及屏幕翻转。",
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"id": "cross-line"},
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[120, 40], [20, 120], [40, 180]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "on-divider"},
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[20, 40], [20, 200]]
+      }
+    }
+  ]
+}

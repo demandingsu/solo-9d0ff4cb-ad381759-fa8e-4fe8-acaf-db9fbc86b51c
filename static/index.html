@@ -56,6 +56,7 @@
     <div class="tabs">
       <button id="tabImport" class="active" onclick="showTab('import')">导入</button>
       <button id="tabChange" onclick="showTab('change')">变更</button>
+      <button id="tabRegistration" onclick="showTab('registration')">图幅配准</button>
       <button id="tabQuery" onclick="showTab('query')">查询</button>
     </div>
 
@@ -82,6 +83,33 @@
       <div id="planMsg"></div>
       <div id="planSummary"></div>
       <button class="action ok hidden" id="commitBtn" onclick="doCommit()">确认提交（原子写入）</button>
+    </section>
+
+    <!-- 图幅配准 -->
+    <section id="paneRegistration" class="hidden">
+      <h2>旧图幅界址线配准到地籍底图</h2>
+      <p class="muted">四个像素控制点按周边顺序录入（G1→G2→G3→G4），沿 G1-G3 连线分两个三角区分片配准；登记顶点必须取自所选地籍版本的宗地顶点。</p>
+      <label>地籍版本</label>
+      <div class="row">
+        <input type="number" id="regVersion" min="1" placeholder="版本号，如 1">
+        <button class="action" style="width:120px" onclick="loadRegJobs()">载入作业</button>
+      </div>
+      <label style="margin-top:8px">像素控制点 → 登记顶点</label>
+      <table id="gcpTable">
+        <tr><th>#</th><th>像素 x,y</th><th>登记 x,y</th></tr>
+      </table>
+      <label style="margin-top:8px">像素折线 GeoJSON（LineString / MultiLineString）</label>
+      <input type="file" id="regFile" accept=".json,.geojson,application/geo+json" style="font-size:12px;margin-bottom:6px" onchange="loadRegFile(this)">
+      <textarea id="regPolylines" style="min-height:110px" placeholder='{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[..],[..]]}}]}'></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="action" onclick="createRegJob()">新建作业并配准</button>
+        <button class="action ok" id="recomputeBtn" onclick="recomputeRegJob()" disabled>更正后重算整批</button>
+      </div>
+      <div id="regMsg"></div>
+      <div id="regSummary"></div>
+      <button class="action hidden" id="downloadBtn" style="background:#6d4c41" onclick="downloadRegResult()">下载 GeoJSON 成果（同一份预览成果）</button>
+      <h2>配准作业列表</h2>
+      <div id="regJobList"></div>
     </section>
 
     <!-- 查询 -->
@@ -116,7 +144,7 @@
       <span><i class="swatch" style="background:#e53935"></i>缺口</span>
       <span><i class="swatch" style="background:#fb8c00"></i>侵占</span>
       <span><i class="swatch" style="background:#8e24aa"></i>越界</span>
-      <span><i class="swatch" style="background:#d81b60"></i>新面互叠</span>
+      <span><i class="swatch" style="background:#d81b60"></i>新面互叠 / 配准成果线</span>
     </div>
   </div>
 </div>
@@ -127,7 +155,7 @@ let state = { version: 0, parcels: [] };
 let lastPlan = null;
 
 function showTab(name) {
-  for (const t of ["Import", "Change", "Query"]) {
+  for (const t of ["Import", "Change", "Registration", "Query"]) {
     document.getElementById("pane" + t).classList.toggle("hidden", t.toLowerCase() !== name);
     document.getElementById("tab" + t).classList.toggle("active", t.toLowerCase() === name);
   }
@@ -159,8 +187,10 @@ function allRings(features) {
   const rings = [];
   for (const f of features) {
     const g = f.geometry || f;
-    if (g.type !== "Polygon") continue;
-    rings.push(g.coordinates[0]);
+    if (g.type === "Polygon") rings.push(g.coordinates[0]);
+    else if (g.type === "LineString") rings.push(g.coordinates);
+    else if (g.type === "MultiLineString") g.coordinates.forEach(l => rings.push(l));
+    else if (g.type === "Point") rings.push([g.coordinates]);
   }
   return rings;
 }
@@ -204,6 +234,22 @@ function renderMap(overlays) {
     svg.appendChild(el);
     return el;
   }
+  function addLine(geom, attrs) {
+    const el = document.createElementNS(SVG_NS, "polyline");
+    el.setAttribute("points", geom.coordinates.map(p => tx(p).join(",")).join(" "));
+    el.setAttribute("fill", "none");
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+    svg.appendChild(el);
+    return el;
+  }
+  function addMarker(p, attrs) {
+    const [cx, cy] = tx(p);
+    const el = document.createElementNS(SVG_NS, "circle");
+    el.setAttribute("cx", cx); el.setAttribute("cy", cy); el.setAttribute("r", 4);
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+    svg.appendChild(el);
+    return el;
+  }
   function addLabel(geom, text, color) {
     const ring = geom.coordinates[0];
     const cx = ring.reduce((s, p) => s + p[0], 0) / ring.length;
@@ -223,8 +269,16 @@ function renderMap(overlays) {
   });
   for (const layer of (overlays || [])) {
     for (const f of layer.features) {
-      addPolygon(f.geometry, { fill: layer.color, stroke: layer.stroke || layer.color, "stroke-width": 1.2, "fill-opacity": layer.opacity ?? 0.55 });
-      if (f.label) addLabel(f.geometry, f.label, layer.stroke || layer.color);
+      const g = f.geometry;
+      const attrs = { stroke: layer.stroke || layer.color, "stroke-width": layer.width || 2,
+                      fill: layer.color, "fill-opacity": layer.opacity ?? 0.55 };
+      if (g.type === "Polygon") addPolygon(g, attrs);
+      else if (g.type === "LineString" || g.type === "MultiLineString") {
+        if (g.type === "LineString") addLine(g, { stroke: layer.stroke || layer.color, "stroke-width": layer.width || 2.5 });
+        else g.coordinates.forEach(l => addLine({ coordinates: l }, { stroke: layer.stroke || layer.color, "stroke-width": layer.width || 2.5 }));
+      }
+      else if (g.type === "Point") addMarker(g.coordinates, { fill: layer.stroke || layer.color, stroke: "#fff", "stroke-width": 1 });
+      if (f.label && g.type === "Polygon") addLabel(g, f.label, layer.stroke || layer.color);
     }
   }
 }
@@ -319,6 +373,151 @@ async function doCommit() {
     await refreshState();
   }
 }
+
+/* ---------- 图幅配准 ---------- */
+let regState = { currentJob: null };
+
+function buildGcpRows(gcps) {
+  const tbl = document.getElementById("gcpTable");
+  tbl.innerHTML = "<tr><th>#</th><th>像素 x,y</th><th>登记 x,y</th></tr>";
+  for (let i = 0; i < 4; i++) {
+    const g = gcps && gcps[i] ? gcps[i] : { pixel: ["", ""], ground: ["", ""] };
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>G${i + 1}</td>` +
+      `<td><div class="row"><input data-k="px" data-i="${i}" data-c="0" value="${g.pixel[0] ?? ""}">` +
+      `<input data-k="px" data-i="${i}" data-c="1" value="${g.pixel[1] ?? ""}"></div></td>` +
+      `<td><div class="row"><input data-k="gd" data-i="${i}" data-c="0" value="${g.ground[0] ?? ""}">` +
+      `<input data-k="gd" data-i="${i}" data-c="1" value="${g.ground[1] ?? ""}"></div></td>`;
+    tbl.appendChild(tr);
+  }
+}
+
+function readGcps() {
+  const gcps = [];
+  for (let i = 0; i < 4; i++) {
+    const px = [0, 1].map(c => parseFloat(document.querySelector(`#gcpTable input[data-k="px"][data-i="${i}"][data-c="${c}"]`).value));
+    const gd = [0, 1].map(c => parseFloat(document.querySelector(`#gcpTable input[data-k="gd"][data-i="${i}"][data-c="${c}"]`).value));
+    if (px.some(Number.isNaN) || gd.some(Number.isNaN)) throw new Error(`控制点 G${i + 1} 坐标不完整或不是数值`);
+    gcps.push({ pixel: px, ground: gd });
+  }
+  return gcps;
+}
+
+function readRegBody() {
+  const version = parseInt(document.getElementById("regVersion").value, 10);
+  if (!version) throw new Error("请填写地籍版本号");
+  let fc;
+  try { fc = JSON.parse(document.getElementById("regPolylines").value); }
+  catch (e) { throw new Error("像素折线 GeoJSON 解析失败：" + e.message); }
+  if (!fc || fc.type !== "FeatureCollection" || !Array.isArray(fc.features) || !fc.features.length)
+    throw new Error("像素折线必须是含要素的 FeatureCollection");
+  return { base_version: version, gcps: readGcps(), polylines: fc };
+}
+
+function loadRegFile(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      JSON.parse(reader.result);  // 先校验 JSON 合法性
+      document.getElementById("regPolylines").value = reader.result;
+      setMsg("regMsg", "ok", `已载入文件 ${file.name}，可新建作业或重算。`);
+    } catch (e) {
+      setMsg("regMsg", "err", `文件 ${file.name} 不是合法 JSON：` + e.message);
+    }
+  };
+  reader.onerror = () => setMsg("regMsg", "err", "文件读取失败：" + reader.error);
+  reader.readAsText(file);
+}
+
+function renderRegJob(job) {
+  regState.currentJob = job;
+  document.getElementById("recomputeBtn").disabled = !job;
+  const dl = document.getElementById("downloadBtn");
+  dl.classList.toggle("hidden", !job || !job.result);
+  const sum = document.getElementById("regSummary");
+  if (!job) { sum.innerHTML = ""; return; }
+  const pill = job.status === "success"
+    ? '<span class="pill" style="background:#eaf6ec;color:#1e6b29">计算成功</span>'
+    : '<span class="pill gap">计算失败（问题见下）</span>';
+  const keep = job.result ? `<span class="pill" style="background:#e3f2fd;color:#0d47a1">保留上次成功成果，可下载</span>` : "";
+  const issueRows = job.issues.map(i =>
+    `<tr><td><span class="pill gap">${i.kind}</span></td><td>${i.message}</td></tr>`).join("");
+  sum.innerHTML =
+    `<div style="margin:8px 0">作业 #${job.job_id}　${pill} ${keep}　版本 v${job.base_version}</div>` +
+    (job.stats ? `<div class="muted">输入折线 ${job.stats.polylines} 条，成果线段 ${job.stats.output_line_count ?? 0} 条，超网 ${job.stats.out_of_network_count ?? 0} 处</div>` : "") +
+    (issueRows ? `<table style="margin-top:6px"><tr><th>问题类型</th><th>位置与说明</th></tr>${issueRows}</table>` : "");
+  // 地图预览：底图 + 本次或上次成果（同一份存储成果）
+  if (job.result && job.result.features.length) {
+    renderMap([{ color: "#d81b60", stroke: "#ad1457", width: 3, opacity: 0.9,
+      features: job.result.features.map(f => ({ geometry: f.geometry })) }]);
+  } else {
+    renderMap();
+  }
+}
+
+async function createRegJob() {
+  setMsg("regMsg", "");
+  let body;
+  try { body = readRegBody(); } catch (e) { return setMsg("regMsg", "err", e.message); }
+  try {
+    const job = await api("/api/registration/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    setMsg("regMsg", job.status === "success" ? "ok" : "warn",
+      job.status === "success" ? "配准成功：成果已保存，预览与下载使用同一份成果。" : "配准未通过：请按问题定位修正后重算；若曾成功，仍可下载上次成果。");
+    renderRegJob(job);
+    loadRegJobs();
+  } catch (e) { setMsg("regMsg", "err", e.message); }
+}
+
+async function recomputeRegJob() {
+  const cur = regState.currentJob;
+  if (!cur) return setMsg("regMsg", "warn", "请先新建或选择一个作业");
+  let body;
+  try { body = readRegBody(); } catch (e) { return setMsg("regMsg", "err", e.message); }
+  try {
+    const job = await api(`/api/registration/jobs/${cur.job_id}/recompute`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    setMsg("regMsg", job.status === "success" ? "ok" : "warn",
+      job.status === "success" ? "重算成功：整批成果已更新。" : "重算失败：上次成功成果已保留，仍可下载。");
+    renderRegJob(job);
+    loadRegJobs();
+  } catch (e) { setMsg("regMsg", "err", e.message); }
+}
+
+function downloadRegResult() {
+  const cur = regState.currentJob;
+  if (cur) window.location.href = `/api/registration/jobs/${cur.job_id}/result.geojson`;
+}
+
+async function loadRegJobs() {
+  try {
+    const r = await api("/api/registration/jobs");
+    document.getElementById("regJobList").innerHTML =
+      "<table><tr><th>#</th><th>版本</th><th>状态</th><th>成果</th><th>更新时间</th><th></th></tr>" +
+      r.jobs.map(j => `<tr><td>${j.job_id}</td><td>v${j.base_version}</td>` +
+        `<td>${j.status === "success" ? "成功" : "失败"}</td><td>${j.has_result ? "有" : "无"}</td>` +
+        `<td>${j.updated_at}</td>` +
+        `<td><span class="txn-link" onclick="openRegJob(${j.job_id})">打开</span></td></tr>`).join("") + "</table>";
+  } catch (e) { document.getElementById("regJobList").innerHTML = `<div class="msg err">${e.message}</div>`; }
+}
+
+async function openRegJob(id) {
+  try {
+    const job = await api("/api/registration/jobs/" + id);
+    document.getElementById("regVersion").value = job.base_version;
+    buildGcpRows(job.gcps);
+    document.getElementById("regPolylines").value = JSON.stringify({
+      type: "FeatureCollection",
+      features: job.polylines.map(p => ({ type: "Feature", properties: { id: p.source_id }, geometry: p.geometry })),
+    });
+    setMsg("regMsg", "");
+    renderRegJob(job);
+  } catch (e) { setMsg("regMsg", "err", e.message); }
+}
+
+buildGcpRows();
 
 /* ---------- 查询 ---------- */
 async function queryParcelHistory() {
